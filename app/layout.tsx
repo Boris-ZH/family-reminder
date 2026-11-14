@@ -16,6 +16,10 @@ export const metadata: Metadata = {
   title: "Семейный календарь",
   description: "Напоминалка для семьи",
   manifest: "/manifest.json",
+  icons: {
+    icon: "/icon.png", // 👈 Для браузеров и Android
+    apple: "/icon.png", // 👈 Для iOS
+  },
 };
 
 export default function RootLayout({
