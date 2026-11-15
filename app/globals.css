@@ -1,1 +1,4 @@
 @import "tailwindcss";
+
+/* 👇 Эта строка включает поддержку ручного переключения темной темы */
+@custom-variant dark (&:where(.dark, .dark *));
