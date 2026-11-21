@@ -1,8 +1,11 @@
 'use client'
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase'
 import { playClickSound, playSuccessSound } from '@/lib/sound'
+
+const TELEGRAM_BOT_URL = 'https://t.me/Wild_Zhoponogis_bot'
+const LINK_CODE_TTL_MS = 15 * 60 * 1000
 
 export default function DashboardPage() {
   const [profile, setProfile] = useState<any>(null)
@@ -31,6 +34,17 @@ export default function DashboardPage() {
 
   // 👇 Состояние для темы
   const [isDark, setIsDark] = useState(false)
+
+  // 👇 Telegram-уведомления
+  const [telegram, setTelegram] = useState<{ chatId: number | null; username: string | null }>({
+    chatId: null,
+    username: null,
+  })
+  const [isTelegramModalOpen, setIsTelegramModalOpen] = useState(false)
+  const [telegramCode, setTelegramCode] = useState('')
+  const [telegramState, setTelegramState] = useState<'idle' | 'waiting' | 'timeout'>('idle')
+  const [telegramError, setTelegramError] = useState('')
+  const telegramPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const router = useRouter()
   const supabase = createClient()
@@ -73,7 +87,7 @@ export default function DashboardPage() {
 
       const { data: profileData, error: profileError } = await supabase
         .from('profiles')
-        .select('id, full_name, role, family_id')
+        .select('id, full_name, role, family_id, telegram_chat_id, telegram_username')
         .eq('id', user.id)
         .maybeSingle()
 
@@ -83,6 +97,10 @@ export default function DashboardPage() {
         return
       }
       setProfile(profileData)
+      setTelegram({
+        chatId: profileData.telegram_chat_id ?? null,
+        username: profileData.telegram_username ?? null,
+      })
 
       if (profileData.family_id) {
         const { data: familyData } = await supabase
@@ -134,6 +152,107 @@ export default function DashboardPage() {
     router.push('/auth')
   }
 
+  const stopTelegramPolling = () => {
+    if (telegramPollRef.current) {
+      clearInterval(telegramPollRef.current)
+      telegramPollRef.current = null
+    }
+  }
+
+  const refreshTelegramLink = async () => {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return false
+
+    const { data } = await supabase
+      .from('profiles')
+      .select('telegram_chat_id, telegram_username')
+      .eq('id', user.id)
+      .maybeSingle()
+
+    if (data?.telegram_chat_id) {
+      setTelegram({ chatId: data.telegram_chat_id, username: data.telegram_username ?? null })
+      setTelegramState('idle')
+      setTelegramCode('')
+      stopTelegramPolling()
+      return true
+    }
+    return false
+  }
+
+  const connectTelegram = async () => {
+    playClickSound()
+    if (!profile) return
+
+    setTelegramError('')
+    setTelegramState('waiting')
+
+    try {
+      const alphabet = 'abcdefghijkmnpqrstuvwxyz23456789'
+      const bytes = crypto.getRandomValues(new Uint8Array(10))
+      const code = Array.from(bytes).map(b => alphabet[b % alphabet.length]).join('')
+      const expiresAt = new Date(Date.now() + LINK_CODE_TTL_MS).toISOString()
+
+      const { error } = await supabase
+        .from('profiles')
+        .update({ telegram_link_code: code, telegram_link_code_expires_at: expiresAt })
+        .eq('id', profile.id)
+      if (error) throw error
+
+      setTelegramCode(code)
+      window.open(`${TELEGRAM_BOT_URL}?start=${code}`, '_blank', 'noopener,noreferrer')
+
+      stopTelegramPolling()
+      let attempts = 0
+      telegramPollRef.current = setInterval(async () => {
+        attempts += 1
+        const linked = await refreshTelegramLink()
+        if (linked) return
+        if (attempts >= 40) {
+          stopTelegramPolling()
+          setTelegramState('timeout')
+        }
+      }, 3000)
+    } catch (err: any) {
+      setTelegramState('idle')
+      setTelegramError(err.message || 'Не удалось создать код привязки')
+    }
+  }
+
+  const checkTelegramLink = async () => {
+    playClickSound()
+    const linked = await refreshTelegramLink()
+    if (!linked) setTelegramState('timeout')
+  }
+
+  const disconnectTelegram = async () => {
+    if (!profile) return
+    if (!confirm('Отключить Telegram-уведомления?')) return
+
+    playClickSound()
+    try {
+      const { error } = await supabase
+        .from('profiles')
+        .update({
+          telegram_chat_id: null,
+          telegram_username: null,
+          telegram_link_code: null,
+          telegram_link_code_expires_at: null,
+        })
+        .eq('id', profile.id)
+      if (error) throw error
+
+      stopTelegramPolling()
+      setTelegram({ chatId: null, username: null })
+      setTelegramState('idle')
+      setTelegramCode('')
+      setTelegramError('')
+    } catch (err: any) {
+      setTelegramError(err.message || 'Не удалось отключить Telegram')
+    }
+  }
+
+  useEffect(() => () => stopTelegramPolling(), [])
+
   const copyCodeToClipboard = () => {
     navigator.clipboard.writeText(familyCode)
     setIsCopied(true)
@@ -159,8 +278,9 @@ export default function DashboardPage() {
     setNewTitle(ev.title)
     setNewDesc(ev.description || '')
     const d = new Date(ev.event_time)
-    setNewDate(d.toISOString().split('T')[0])
-    setNewTime(d.toTimeString().slice(0, 5))
+    const pad = (n: number) => String(n).padStart(2, '0')
+    setNewDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`)
+    setNewTime(`${pad(d.getHours())}:${pad(d.getMinutes())}`)
     setNewRecurrence(ev.recurrence_rule || 'none')
     setModalError('')
     setSelectedEvent(null)
@@ -339,6 +459,10 @@ export default function DashboardPage() {
             <button onClick={toggleTheme} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-100 font-bold rounded-xl shadow-sm text-sm active:scale-95 transition-all">
               {isDark ? '☀️' : '🌙'}
             </button>
+            <button onClick={() => { playClickSound(); setIsTelegramModalOpen(true) }} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-100 font-bold rounded-xl shadow-sm text-sm active:scale-95 transition-all relative" title="Telegram-уведомления">
+              ✈️
+              <span className={`absolute top-1 right-1 w-2 h-2 rounded-full ${telegram.chatId ? 'bg-green-400' : 'bg-red-400'}`} />
+            </button>
             <button onClick={() => { playClickSound(); setIsFamilyModalOpen(true) }} className="px-3 py-2 bg-slate-700 hover:bg-slate-600 text-slate-100 font-bold rounded-xl shadow-sm text-sm active:scale-95 transition-all" title="Наша семья">
               👨‍👩‍👧‍👦
             </button>
@@ -427,6 +551,58 @@ export default function DashboardPage() {
           <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
         </svg>
       </button>
+
+      {isTelegramModalOpen && (
+        <div className="fixed inset-0 bg-black/40 dark:bg-black/60 flex items-center justify-center p-4 z-[200]" onClick={() => { stopTelegramPolling(); setIsTelegramModalOpen(false) }}>
+          <div className="bg-white dark:bg-slate-800 w-full max-w-sm rounded-3xl p-6 shadow-2xl relative" onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => { stopTelegramPolling(); setIsTelegramModalOpen(false) }} className="absolute top-4 right-4 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-2xl font-bold p-2">×</button>
+            <h2 className="text-2xl font-bold text-gray-800 dark:text-slate-100 mb-1 pr-6">Telegram</h2>
+            <p className="text-sm text-gray-500 dark:text-slate-400 mb-5">Сводка на день в 08:30 и сообщения об изменениях — прямо в Telegram.</p>
+
+            {telegramError && (
+              <div className="mb-4 text-sm text-red-500 bg-red-50 dark:bg-red-900/30 p-3 rounded-xl">{telegramError}</div>
+            )}
+
+            {telegram.chatId ? (
+              <div className="space-y-4">
+                <div className="bg-green-50 dark:bg-green-900/20 border border-green-100 dark:border-green-900/50 p-4 rounded-2xl">
+                  <p className="font-bold text-green-800 dark:text-green-200">✅ Уведомления подключены</p>
+                  {telegram.username && <p className="text-sm text-green-700 dark:text-green-300 mt-1">@{telegram.username}</p>}
+                  <p className="text-xs text-green-600 dark:text-green-400 mt-2">Каждое утро в 08:30 приходит сводка, а новые, изменённые и выполненные события — сразу.</p>
+                </div>
+                <a href={TELEGRAM_BOT_URL} target="_blank" rel="noreferrer" className="block text-center py-3 rounded-xl font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 active:scale-95 transition-transform">Открыть бота</a>
+                <button onClick={disconnectTelegram} className="w-full py-3 rounded-xl font-bold text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-900/30 active:scale-95 transition-transform">Отключить уведомления</button>
+              </div>
+            ) : telegramState === 'waiting' ? (
+              <div className="space-y-3">
+                <div className="bg-blue-50 dark:bg-blue-900/20 p-4 rounded-2xl text-center">
+                  <p className="text-sm font-semibold text-blue-800 dark:text-blue-300">Код привязки</p>
+                  <p className="text-2xl font-mono font-bold tracking-widest text-blue-900 dark:text-blue-200 mt-1">{telegramCode}</p>
+                  <p className="text-xs text-blue-600 dark:text-blue-400 mt-2">Откройте бота и нажмите «Start» — ждём подтверждение…</p>
+                </div>
+                <a href={`${TELEGRAM_BOT_URL}?start=${telegramCode}`} target="_blank" rel="noreferrer" className="block text-center py-3 rounded-xl font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30 active:scale-95 transition-transform">Открыть @Wild_Zhoponogis_bot</a>
+                <button onClick={checkTelegramLink} className="w-full py-3 rounded-xl font-bold text-gray-600 dark:text-slate-300 bg-gray-100 dark:bg-slate-700 active:scale-95 transition-transform">Я нажал(а) Start</button>
+                <button onClick={connectTelegram} className="w-full py-2 text-sm font-semibold text-gray-400 dark:text-slate-500">Сгенерировать новый код</button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {telegramState === 'timeout' && (
+                  <div className="text-sm text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/30 p-3 rounded-xl">
+                    Бот не подтвердил привязку. Откройте бота, нажмите «Start» и проверьте ещё раз.
+                  </div>
+                )}
+                <div className="bg-gray-50 dark:bg-slate-700/50 p-4 rounded-2xl text-sm text-gray-600 dark:text-slate-300 space-y-1">
+                  <p>1. Нажмите «Подключить Telegram».</p>
+                  <p>2. В открывшемся боте нажмите «Start».</p>
+                  <p>3. Подтверждение придёт автоматически.</p>
+                </div>
+                <button onClick={connectTelegram} className="w-full py-4 rounded-2xl font-bold text-lg bg-blue-200 dark:bg-blue-600 text-blue-900 dark:text-white active:scale-95 transition-transform">Подключить Telegram</button>
+                <a href={TELEGRAM_BOT_URL} target="_blank" rel="noreferrer" className="block text-center text-sm font-semibold text-blue-600 dark:text-blue-400">Открыть @Wild_Zhoponogis_bot</a>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {isFamilyModalOpen && (
         <div className="fixed inset-0 bg-black/40 dark:bg-black/60 flex items-center justify-center p-4 z-[200]" onClick={() => setIsFamilyModalOpen(false)}>

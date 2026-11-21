@@ -1,0 +1,5 @@
+[functions.telegram-bot-handler]
+verify_jwt = false
+
+[functions.telegram-notifier]
+verify_jwt = false
