@@ -7,7 +7,12 @@
 //   /stop         — отключить уведомления
 //   /help         — справка
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
-import { buildDigestForFamily, escapeHtml, sendTelegramMessage } from '../_shared/telegram.ts'
+import {
+  buildDigestForFamily,
+  escapeHtml,
+  sendTelegramMessage,
+  TODAY_KEYBOARD,
+} from '../_shared/telegram.ts'
 
 const BOT_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN') ?? ''
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? ''
@@ -27,9 +32,18 @@ const HELP_TEXT =
   '/help — эта справка\n\n' +
   'Чтобы подключить уведомления, откройте приложение и нажмите «Подключить Telegram».'
 
-async function reply(chatId: number | string, html: string) {
+async function reply(chatId: number | string, html: string, markup?: unknown) {
   if (!BOT_TOKEN) return
-  await sendTelegramMessage(BOT_TOKEN, chatId, html)
+  await sendTelegramMessage(BOT_TOKEN, chatId, html, markup)
+}
+
+async function answerCallbackQuery(id: string) {
+  if (!BOT_TOKEN) return
+  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/answerCallbackQuery`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ callback_query_id: id }),
+  })
 }
 
 async function linkChat(chatId: number, username: string | null, payload: string) {
@@ -159,7 +173,7 @@ async function sendToday(chatId: number) {
 
   const messages = await buildDigestForFamily(supabase, profile.family_id)
   for (const message of messages) {
-    await reply(chatId, message)
+    await reply(chatId, message, TODAY_KEYBOARD)
   }
 }
 
@@ -196,6 +210,28 @@ Deno.serve(async (req) => {
   try {
     update = await req.json()
   } catch {
+    return new Response('OK', { status: 200 })
+  }
+
+  // Кнопка «/today» под уведомлениями (inline keyboard).
+  const callback = update?.callback_query
+  if (callback) {
+    try {
+      await answerCallbackQuery(callback.id)
+    } catch (error) {
+      console.error('answerCallbackQuery failed:', error)
+    }
+
+    const callbackChatId: number | undefined = callback.message?.chat?.id
+    if (callbackChatId && callback.data === 'today') {
+      const chatType: string | undefined = callback.message?.chat?.type
+      if (chatType && chatType !== 'private') {
+        await reply(callbackChatId, 'Я работаю только в личных сообщениях.')
+      } else {
+        await sendToday(callbackChatId)
+      }
+    }
+
     return new Response('OK', { status: 200 })
   }
 

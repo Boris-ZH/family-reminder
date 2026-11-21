@@ -214,10 +214,16 @@ export function buildDigestMessages(occurrences: Occurrence[], label: string): s
 
 export type SendResult = { ok: boolean; status: number; description?: string }
 
+/** Кнопка «/today» под каждым уведомлением: по нажатию бот присылает события на сегодня. */
+export const TODAY_KEYBOARD = {
+  inline_keyboard: [[{ text: '📅 /today — события на сегодня', callback_data: 'today' }]],
+}
+
 export async function sendTelegramMessage(
   botToken: string,
   chatId: number | string,
   html: string,
+  replyMarkup?: unknown,
 ): Promise<SendResult> {
   const url = `https://api.telegram.org/bot${botToken}/sendMessage`
   const post = (payload: Record<string, unknown>) =>
@@ -227,11 +233,14 @@ export async function sendTelegramMessage(
       body: JSON.stringify(payload),
     })
 
+  const markup = replyMarkup ? { reply_markup: replyMarkup } : {}
+
   let response = await post({
     chat_id: chatId,
     text: html,
     parse_mode: 'HTML',
     disable_web_page_preview: true,
+    ...markup,
   })
   let data: any = null
   try {
@@ -247,7 +256,12 @@ export async function sendTelegramMessage(
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
       .replace(/&amp;/g, '&')
-    response = await post({ chat_id: chatId, text: plain, disable_web_page_preview: true })
+    response = await post({
+      chat_id: chatId,
+      text: plain,
+      disable_web_page_preview: true,
+      ...markup,
+    })
     try {
       data = await response.json()
     } catch {
@@ -290,12 +304,18 @@ export async function notifyFamily(
   familyId: string,
   html: string,
   excludeUserId?: string | null,
+  replyMarkup?: unknown,
 ): Promise<{ sent: number; total: number }> {
   const recipients = await getFamilyRecipients(supabase, familyId, excludeUserId)
   let sent = 0
 
   for (const recipient of recipients) {
-    const result = await sendTelegramMessage(botToken, recipient.telegram_chat_id, html)
+    const result = await sendTelegramMessage(
+      botToken,
+      recipient.telegram_chat_id,
+      html,
+      replyMarkup,
+    )
     if (result.ok) {
       sent++
       continue

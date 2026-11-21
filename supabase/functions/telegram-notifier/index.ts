@@ -21,6 +21,7 @@ import {
   localRange,
   notifyFamily,
   sendTelegramMessage,
+  TODAY_KEYBOARD,
   type EventRow,
 } from '../_shared/telegram.ts'
 
@@ -116,7 +117,14 @@ async function handleEventChange(body: any) {
   // Автор действия не получает уведомление о своём же действии.
   if (body.type === 'INSERT') excludeUserId = record.created_by ?? excludeUserId
 
-  const result = await notifyFamily(supabase, BOT_TOKEN, current.family_id, text, excludeUserId)
+  const result = await notifyFamily(
+    supabase,
+    BOT_TOKEN,
+    current.family_id,
+    text,
+    excludeUserId,
+    TODAY_KEYBOARD,
+  )
   return { ok: true, ...result }
 }
 
@@ -135,7 +143,14 @@ async function handleAcknowledgement(body: any) {
   const actor = (await getProfileName(supabase, ack.user_id)) ?? 'Кто-то из семьи'
   const text = `✅ <b>${escapeHtml(actor)}</b> выполнил(а) событие\n\n${eventCard(event.title, event.event_time)}`
 
-  const result = await notifyFamily(supabase, BOT_TOKEN, event.family_id, text, ack.user_id)
+  const result = await notifyFamily(
+    supabase,
+    BOT_TOKEN,
+    event.family_id,
+    text,
+    ack.user_id,
+    TODAY_KEYBOARD,
+  )
   return { ok: true, ...result }
 }
 
@@ -158,7 +173,7 @@ async function handleDigest() {
   for (const familyId of families) {
     const messages = await buildDigestForFamily(supabase, familyId)
     for (const message of messages) {
-      const result = await notifyFamily(supabase, BOT_TOKEN, familyId, message)
+      const result = await notifyFamily(supabase, BOT_TOKEN, familyId, message, null, TODAY_KEYBOARD)
       sent += result.sent
     }
   }
@@ -202,7 +217,14 @@ async function handleReminders() {
     }
 
     const text = `⏰ <b>Через 15 минут</b>\n\n${eventCard(occurrence.event.title, occurrence.at.toISOString(), occurrence.event.description)}\n\n⏱ Начало в ${formatTime(occurrence.at)}`
-    const result = await notifyFamily(supabase, BOT_TOKEN, familyId, text)
+    const result = await notifyFamily(
+      supabase,
+      BOT_TOKEN,
+      familyId,
+      text,
+      null,
+      TODAY_KEYBOARD,
+    )
     sent += result.sent
   }
 
