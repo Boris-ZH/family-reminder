@@ -61,9 +61,10 @@ async function linkChat(chatId: number, username: string | null, payload: string
   }
 
   // Принимаем и короткий код из приложения, и старый вариант с uuid пользователя.
+  // Имя семьи запрашиваем отдельно: FK profiles.family_id -> families в схеме нет.
   const { data: profile, error } = await supabase
     .from('profiles')
-    .select('id, full_name, family_id, telegram_link_code_expires_at, families(name)')
+    .select('id, full_name, family_id, telegram_link_code_expires_at')
     .eq(isUuid(code) ? 'id' : 'telegram_link_code', code)
     .maybeSingle()
 
@@ -114,7 +115,16 @@ async function linkChat(chatId: number, username: string | null, payload: string
     return
   }
 
-  const familyName = (profile as any).families?.name as string | undefined
+  let familyName: string | undefined
+  if (profile.family_id) {
+    const { data: family } = await supabase
+      .from('families')
+      .select('name')
+      .eq('id', profile.family_id)
+      .maybeSingle()
+    familyName = family?.name ?? undefined
+  }
+
   const greeting = profile.full_name ? `${escapeHtml(profile.full_name)}, ` : ''
 
   if (!profile.family_id) {
@@ -213,6 +223,9 @@ Deno.serve(async (req) => {
       await unsubscribe(chatId)
     } else if (command === '/help') {
       await reply(chatId, HELP_TEXT)
+    } else if (/^[a-z0-9]{8,12}$/.test(command)) {
+      // Пользователь просто прислал код привязки текстом — тоже принимаем.
+      await linkChat(chatId, username, command)
     } else {
       await reply(chatId, HELP_TEXT)
     }
